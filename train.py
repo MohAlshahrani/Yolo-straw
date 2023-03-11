@@ -25,6 +25,7 @@ import time
 from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
+import psutil
 
 import numpy as np
 import torch
@@ -259,6 +260,9 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
                 f'Using {train_loader.num_workers * WORLD_SIZE} dataloader workers\n'
                 f"Logging results to {colorstr('bold', save_dir)}\n"
                 f'Starting training for {epochs} epochs...')
+    mem_usage = []
+    total_mem = []
+    cpu_epoch= []
     for epoch in range(start_epoch, epochs):  # epoch ------------------------------------------------------------------
         callbacks.run('on_train_epoch_start')
         model.train()
@@ -343,6 +347,13 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
         lr = [x['lr'] for x in optimizer.param_groups]  # for loggers
         scheduler.step()
 
+        # added by MoALshahrani
+        temp1 = psutil.cpu_percent(percpu=True)
+        cpu_epoch.append(temp1)
+        temp2 = psutil.virtual_memory()
+        total_mem.append(temp2)
+        #######################
+
         if RANK in {-1, 0}:
             # mAP
             callbacks.run('on_train_epoch_end', epoch=epoch)
@@ -368,6 +379,7 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
                 best_fitness = fi
             log_vals = list(mloss) + list(results) + lr
             callbacks.run('on_fit_epoch_end', log_vals, epoch, best_fitness, fi)
+
 
             # Save model
             if (not nosave) or (final_epoch and not evolve):  # if save
@@ -399,6 +411,8 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
                 stop = broadcast_list[0]
         if stop:
             break  # must break all DDP ranks
+        
+
 
         # end epoch ----------------------------------------------------------------------------------------------------
     # end training -----------------------------------------------------------------------------------------------------
@@ -428,8 +442,17 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
 
         callbacks.run('on_train_end', last, best, epoch, results)
 
+    ###### write stats to txt file ######
+
+    f = open('cpu.txt', 'w')
+    f.write(str(cpu_epoch))
+
+    m = open('total.txt', 'w')
+    m.write(str(total_mem))
+    ########################################
+
     torch.cuda.empty_cache()
-    return results
+    return results,total_mem,cpu_epoch
 
 
 def parse_opt(known=False):
@@ -612,12 +635,15 @@ def main(opt, callbacks=Callbacks()):
                 hyp[k] = round(hyp[k], 5)  # significant digits
 
             # Train mutation
-            results = train(hyp.copy(), opt, device, callbacks)
+            results,total_mem,cpu_epoch = train(hyp.copy(), opt, device, callbacks)
             callbacks = Callbacks()
+            
             # Write mutation results
             keys = ('metrics/precision', 'metrics/recall', 'metrics/mAP_0.5', 'metrics/mAP_0.5:0.95', 'val/box_loss',
                     'val/obj_loss', 'val/cls_loss')
             print_mutation(keys, results, hyp.copy(), save_dir, opt.bucket)
+
+
 
         # Plot results
         plot_evolve(evolve_csv)
